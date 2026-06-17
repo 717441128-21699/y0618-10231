@@ -1,13 +1,13 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { useStore } from "@/store/useStore";
 import { PageHeader, EmptyState } from "@/components/ui/EmptyState";
 import { Modal } from "@/components/ui/Modal";
 import { Chip } from "@/components/ui/Badge";
 import { formatDateTimeCN, nowISO, parseISO, rangeLabel } from "@/lib/date";
-import { Wrench, Plus, Trash2, CalendarClock, ShieldOff, Repeat, User } from "lucide-react";
+import { Wrench, Plus, Trash2, CalendarClock, ShieldOff, Repeat, User, Pencil, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { MaintenanceRecurrence } from "@/types";
+import type { MaintenanceRecurrence, MaintenancePlan, NewMaintenanceInput, UpdateMaintenanceInput } from "@/types";
 
 const recurrenceLabels: Record<MaintenanceRecurrence, string> = {
   none: "单次",
@@ -16,13 +16,24 @@ const recurrenceLabels: Record<MaintenanceRecurrence, string> = {
   monthly: "每月重复",
 };
 
+const recurrenceOptions: { value: MaintenanceRecurrence; label: string }[] = [
+  { value: "none", label: "单次" },
+  { value: "daily", label: "每日" },
+  { value: "weekly", label: "每周" },
+  { value: "monthly", label: "每月" },
+];
+
 export default function Maintenance() {
   const maintenancePlans = useStore((s) => s.maintenancePlans);
   const instruments = useStore((s) => s.instruments);
   const addMaintenancePlan = useStore((s) => s.addMaintenancePlan);
+  const updateMaintenancePlan = useStore((s) => s.updateMaintenancePlan);
   const removeMaintenancePlan = useStore((s) => s.removeMaintenancePlan);
+  const currentUser = useStore((s) => s.users.find((u) => u.id === s.currentUserId));
 
-  const [open, setOpen] = useState(false);
+  const canManage = currentUser ? ["admin", "director"].includes(currentUser.role) : false;
+
+  const [editing, setEditing] = useState<{ mode: "create" | "edit"; id?: string } | null>(null);
 
   const sorted = useMemo(
     () => [...maintenancePlans].sort((a, b) => a.start.localeCompare(b.start)),
@@ -32,6 +43,8 @@ export default function Maintenance() {
   const now = nowISO();
   const activeCount = maintenancePlans.filter((m) => m.start <= now && m.end >= now).length;
 
+  const editingPlan = editing?.id ? maintenancePlans.find((p) => p.id === editing.id) : null;
+
   return (
     <div>
       <PageHeader
@@ -39,9 +52,11 @@ export default function Maintenance() {
         title="仪器维护保养计划"
         description="录入维护窗口后，系统自动屏蔽对应时段的预约，避免冲突。"
         actions={
-          <button className="btn-primary" onClick={() => setOpen(true)}>
-            <Plus size={15} /> 新增维护计划
-          </button>
+          canManage && (
+            <button className="btn-primary" onClick={() => setEditing({ mode: "create" })}>
+              <Plus size={15} /> 新增维护计划
+            </button>
+          )
         }
       />
 
@@ -95,17 +110,34 @@ export default function Maintenance() {
                       {isActive && <Chip tone="amber">进行中</Chip>}
                       {isUpcoming && <Chip tone="sky">即将开始</Chip>}
                     </div>
-                    <p className="mt-1 font-mono text-xs text-amberph">{formatDateTimeCN(m.start)} – {parseISO(m.end).getHours()}:{String(parseISO(m.end).getMinutes()).padStart(2, "0")}</p>
-                    <p className="mt-1 text-xs text-ink-200">{m.note}</p>
+                    <p className="mt-1 font-mono text-xs text-amberph">
+                      {formatDateTimeCN(m.start)} – {formatTimeOnly(m.end)}
+                    </p>
+                    <p className="mt-1 text-xs text-ink-200 line-clamp-1">{m.note}</p>
                     <div className="mt-1.5 flex items-center gap-3 text-[10px] text-ink-300">
                       <span className="flex items-center gap-1"><User size={10} /> {m.assignee}</span>
                       <span className="font-mono">{rangeLabel(m.start, m.end)}</span>
                     </div>
                   </div>
 
-                  <button onClick={() => removeMaintenancePlan(m.id)} className="btn-subtle h-8 w-8 shrink-0 p-0 text-roseph hover:bg-roseph/10">
-                    <Trash2 size={14} />
-                  </button>
+                  {canManage && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setEditing({ mode: "edit", id: m.id })}
+                        className="btn-subtle h-8 w-8 shrink-0 p-0 text-ink-200 hover:bg-phosphor/10 hover:text-phosphor-soft"
+                        title="编辑"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      <button
+                        onClick={() => removeMaintenancePlan(m.id)}
+                        className="btn-subtle h-8 w-8 shrink-0 p-0 text-roseph hover:bg-roseph/10"
+                        title="删除"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -114,13 +146,21 @@ export default function Maintenance() {
       )}
 
       <MaintenanceForm
-        open={open}
-        onClose={() => setOpen(false)}
+        open={!!editing}
+        mode={editing?.mode ?? "create"}
+        plan={editingPlan ?? undefined}
         instruments={instruments}
-        onSubmit={addMaintenancePlan}
+        onClose={() => setEditing(null)}
+        onSubmitCreate={(input) => addMaintenancePlan(input)}
+        onSubmitUpdate={(id, patch) => updateMaintenancePlan(id, patch)}
       />
     </div>
   );
+}
+
+function formatTimeOnly(iso: string): string {
+  const d = parseISO(iso);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 function Stat({ icon: Icon, label, value, accent }: { icon: typeof Wrench; label: string; value: number; accent: string }) {
@@ -139,14 +179,20 @@ function Stat({ icon: Icon, label, value, accent }: { icon: typeof Wrench; label
 
 function MaintenanceForm({
   open,
-  onClose,
+  mode,
+  plan,
   instruments,
-  onSubmit,
+  onClose,
+  onSubmitCreate,
+  onSubmitUpdate,
 }: {
   open: boolean;
-  onClose: () => void;
+  mode: "create" | "edit";
+  plan?: MaintenancePlan;
   instruments: ReturnType<typeof useStore.getState>["instruments"];
-  onSubmit: (input: import("@/types").NewMaintenanceInput) => void;
+  onClose: () => void;
+  onSubmitCreate: (input: NewMaintenanceInput) => string;
+  onSubmitUpdate: (id: string, patch: UpdateMaintenanceInput) => void;
 }) {
   const [instrumentId, setInstrumentId] = useState(instruments[0]?.id ?? "");
   const [title, setTitle] = useState("");
@@ -158,22 +204,74 @@ function MaintenanceForm({
   const [startHour, setStartHour] = useState(9);
   const [endHour, setEndHour] = useState(12);
   const [recurrence, setRecurrence] = useState<MaintenanceRecurrence>("none");
-  const [assignee, setAssignee] = useState("林晓彤");
+  const [assignee, setAssignee] = useState("");
   const [note, setNote] = useState("");
 
+  useEffect(() => {
+    if (!open) return;
+    if (mode === "edit" && plan) {
+      setInstrumentId(plan.instrumentId);
+      setTitle(plan.title);
+      const sd = parseISO(plan.start);
+      setDate(sd.toISOString().slice(0, 10));
+      setStartHour(sd.getHours());
+      const ed = parseISO(plan.end);
+      setEndHour(ed.getHours());
+      setRecurrence(plan.recurrence);
+      setAssignee(plan.assignee);
+      setNote(plan.note);
+    } else {
+      setInstrumentId(instruments[0]?.id ?? "");
+      setTitle("");
+      const d = new Date();
+      d.setDate(d.getDate() + 1);
+      setDate(d.toISOString().slice(0, 10));
+      setStartHour(9);
+      setEndHour(12);
+      setRecurrence("none");
+      setAssignee("");
+      setNote("");
+    }
+  }, [open, mode, plan, instruments]);
+
+  const errors = useMemo(() => {
+    const list: string[] = [];
+    if (!title.trim()) list.push("请填写维护标题");
+    if (!instrumentId) list.push("请选择目标仪器");
+    if (!assignee.trim()) list.push("请指定负责人");
+    if (endHour <= startHour) list.push("结束时间必须晚于开始时间");
+    const dur = endHour - startHour;
+    if (dur > 0 && dur < 0.5) list.push("维护窗口至少需要 30 分钟");
+    if (dur > 24) list.push("单次维护不能超过 24 小时");
+    return list;
+  }, [title, instrumentId, assignee, startHour, endHour]);
+
   const submit = () => {
-    if (!title.trim()) return;
-    onSubmit({
-      instrumentId,
-      title: title.trim(),
-      start: `${date}T${String(startHour).padStart(2, "0")}:00`,
-      end: `${date}T${String(endHour).padStart(2, "0")}:00`,
-      recurrence,
-      assignee,
-      note: note.trim() || "例行维护保养。",
-    });
-    setTitle("");
-    setNote("");
+    if (errors.length > 0) return;
+    const startISO = `${date}T${String(startHour).padStart(2, "0")}:00`;
+    const endISO = `${date}T${String(endHour).padStart(2, "0")}:00`;
+    if (mode === "edit" && plan) {
+      const patch: UpdateMaintenanceInput = {
+        instrumentId,
+        title: title.trim(),
+        start: startISO,
+        end: endISO,
+        recurrence,
+        assignee: assignee.trim(),
+        note: note.trim() || "例行维护保养。",
+      };
+      onSubmitUpdate(plan.id, patch);
+    } else {
+      onSubmitCreate({
+        instrumentId,
+        title: title.trim(),
+        start: startISO,
+        end: endISO,
+        recurrence,
+        assignee: assignee.trim(),
+        note: note.trim() || "例行维护保养。",
+      });
+    }
     onClose();
   };
 
@@ -181,23 +279,37 @@ function MaintenanceForm({
     <Modal
       open={open}
       onClose={onClose}
-      title="新增维护计划"
-      subtitle="录入维护窗口后，对应时段将自动屏蔽预约"
+      title={mode === "edit" ? "编辑维护计划" : "新增维护计划"}
+      subtitle={mode === "edit" ? "修改后对应时段将自动更新预约屏蔽规则" : "录入维护窗口后，对应时段将自动屏蔽预约"}
       size="lg"
       footer={
         <>
           <button className="btn-ghost" onClick={onClose}>取消</button>
-          <button className="btn-primary" disabled={!title.trim()} onClick={submit}>
-            <Wrench size={15} /> 录入计划
+          <button className="btn-primary" disabled={errors.length > 0} onClick={submit}>
+            <Wrench size={15} /> {mode === "edit" ? "保存修改" : "录入计划"}
           </button>
         </>
       }
     >
       <div className="space-y-4">
+        {errors.length > 0 && (
+          <div className="flex items-start gap-2 rounded-lg bg-roseph/10 p-3 ring-1 ring-inset ring-roseph/30">
+            <AlertCircle size={15} className="mt-0.5 shrink-0 text-roseph" />
+            <div className="space-y-0.5">
+              <p className="text-xs font-medium text-roseph">无法保存，请先处理以下问题</p>
+              <ul className="list-inside list-disc text-[11px] text-roseph/80">
+                {errors.map((e, i) => <li key={i}>{e}</li>)}
+              </ul>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="目标仪器">
             <select className="input" value={instrumentId} onChange={(e) => setInstrumentId(e.target.value)}>
-              {instruments.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
+              {instruments.filter((i) => i.status !== "offline").map((i) => (
+                <option key={i.id} value={i.id}>{i.name}</option>
+              ))}
             </select>
           </Field>
           <Field label="维护标题">
@@ -208,10 +320,9 @@ function MaintenanceForm({
           </Field>
           <Field label="重复规则">
             <select className="input" value={recurrence} onChange={(e) => setRecurrence(e.target.value as MaintenanceRecurrence)}>
-              <option value="none">单次</option>
-              <option value="daily">每日</option>
-              <option value="weekly">每周</option>
-              <option value="monthly">每月</option>
+              {recurrenceOptions.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
             </select>
           </Field>
           <Field label="开始时间">
@@ -226,7 +337,7 @@ function MaintenanceForm({
           </Field>
         </div>
         <Field label="负责人">
-          <input className="input" value={assignee} onChange={(e) => setAssignee(e.target.value)} />
+          <input className="input" placeholder="维护执行人姓名" value={assignee} onChange={(e) => setAssignee(e.target.value)} />
         </Field>
         <Field label="维护说明">
           <textarea className="input min-h-[72px] resize-none" placeholder="维护内容、注意事项…" value={note} onChange={(e) => setNote(e.target.value)} />

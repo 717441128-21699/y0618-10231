@@ -3,15 +3,26 @@ import { Link } from "react-router-dom";
 import { useStore, maintenanceOccurrences } from "@/store/useStore";
 import { PageHeader } from "@/components/ui/EmptyState";
 import { ReservationModal } from "@/components/ReservationModal";
+import { Chip } from "@/components/ui/Badge";
 import { reservationStatusMeta, instrumentStatusMeta } from "@/lib/status";
 import { addDays, dayKey, formatDateTimeCN, formatTime, parseISO, weekdayCN, nowISO, isBefore, dayKey as dk } from "@/lib/date";
-import { ChevronLeft, ChevronRight, CalendarDays, MousePointerClick, ShieldCheck, Clock } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  CalendarDays,
+  MousePointerClick,
+  ShieldCheck,
+  Clock,
+  Search,
+  Zap,
+  AlertTriangle,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ReservationTarget } from "@/components/ReservationModal";
 import type { MaintenancePlan } from "@/types";
 
-const GLOBAL_OPEN = 8;
-const GLOBAL_CLOSE = 22;
+const GLOBAL_OPEN = 0;
+const GLOBAL_CLOSE = 24;
 const GLOBAL_SPAN = GLOBAL_CLOSE - GLOBAL_OPEN;
 
 export default function Calendar() {
@@ -20,15 +31,128 @@ export default function Calendar() {
   const maintenancePlans = useStore((s) => s.maintenancePlans);
   const users = useStore((s) => s.users);
   const groups = useStore((s) => s.groups);
+  const qualifications = useStore((s) => s.qualifications);
+  const qualificationRecords = useStore((s) => s.qualificationRecords);
+  const currentUserId = useStore((s) => s.currentUserId);
 
   const [day, setDay] = useState(() => new Date());
   const [target, setTarget] = useState<ReservationTarget | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
+  const [precheckId, setPrecheckId] = useState<string | null>(null);
 
   const dKey = dayKey(day);
   const isToday = dKey === dayKey(new Date());
   const rangeStart = `${dKey}T00:00`;
   const rangeEnd = `${dKey}T23:59`;
+
+  const precheckInstrument = precheckId ? instruments.find((i) => i.id === precheckId) : null;
+  const precheckUser = users.find((u) => u.id === currentUserId);
+
+  const precheck = useMemo(() => {
+    if (!precheckInstrument) return null;
+    const ins = precheckInstrument;
+    const openH = ins.dailyOpenHour;
+    const closeH = ins.dailyCloseHour;
+
+    const dayRes = reservations.filter(
+      (r) =>
+        r.instrumentId === ins.id &&
+        dayKey(r.start) === dKey &&
+        r.status !== "cancelled" &&
+        r.status !== "rejected",
+    );
+    const dayMaint = maintenanceOccurrences(maintenancePlans, ins.id, rangeStart, rangeEnd);
+
+    // build busy intervals
+    type Interval = { start: number; end: number; type: "reservation" | "maintenance"; data: unknown };
+    const busy: Interval[] = [];
+    dayRes.forEach((r) => {
+      const s = parseISO(r.start);
+      const e = parseISO(r.end);
+      busy.push({
+        start: s.getHours() + s.getMinutes() / 60,
+        end: e.getHours() + e.getMinutes() / 60,
+        type: "reservation",
+        data: r,
+      });
+    });
+    dayMaint.forEach((m) => {
+      const s = parseISO(m.start);
+      const e = parseISO(m.end);
+      busy.push({
+        start: Math.max(openH, s.getHours() + s.getMinutes() / 60),
+        end: Math.min(closeH, e.getHours() + e.getMinutes() / 60),
+        type: "maintenance",
+        data: m,
+      });
+    });
+    busy.sort((a, b) => a.start - b.start);
+
+    // merge overlapping busy and find free slots
+    const merged: Interval[] = [];
+    busy.forEach((b) => {
+      if (b.end <= b.start) return;
+      if (merged.length === 0 || b.start > merged[merged.length - 1].end) {
+        merged.push({ ...b });
+      } else {
+        const last = merged[merged.length - 1];
+        last.end = Math.max(last.end, b.end);
+      }
+    });
+
+    const freeSlots: { start: number; end: number; hours: number }[] = [];
+    let cursor = openH;
+    merged.forEach((b) => {
+      if (b.start > cursor) {
+        freeSlots.push({ start: cursor, end: b.start, hours: b.start - cursor });
+      }
+      cursor = Math.max(cursor, b.end);
+    });
+    if (cursor < closeH) {
+      freeSlots.push({ start: cursor, end: closeH, hours: closeH - cursor });
+    }
+
+    const usableFree = freeSlots.filter((s) => s.hours >= 0.5);
+
+    // qualification check
+    const qualStatus: "qualified" | "missing" | "not_required" = ins.requiresQualification
+      ? qualificationRecords.some(
+          (qr) =>
+            qr.userId === currentUserId &&
+            ins.qualificationIds.includes(qr.qualificationId) &&
+            parseISO(qr.expireAt) > new Date(),
+        )
+        ? "qualified"
+        : "missing"
+      : "not_required";
+
+    const requiredQualNames = ins.qualificationIds
+      .map((qid) => qualifications.find((q) => q.id === qid)?.name)
+      .filter(Boolean) as string[];
+
+    return {
+      instrument: ins,
+      openHour: openH,
+      closeHour: closeH,
+      openRange: `${String(openH).padStart(2, "0")}:00 – ${String(closeH).padStart(2, "0")}:00`,
+      reservations: dayRes,
+      maintenance: dayMaint,
+      freeSlots: usableFree,
+      qualStatus,
+      requiredQualNames,
+      totalFreeHours: usableFree.reduce((sum, s) => sum + s.hours, 0),
+    };
+  }, [
+    precheckInstrument,
+    dKey,
+    reservations,
+    maintenancePlans,
+    rangeStart,
+    rangeEnd,
+    qualificationRecords,
+    currentUserId,
+    qualifications,
+  ]);
 
   const dayResByInstrument = useMemo(() => {
     const map = new Map<string, typeof reservations>();
@@ -87,6 +211,135 @@ export default function Calendar() {
           </div>
         }
       />
+
+      {/* Precheck panel */}
+      <div className="panel mb-5">
+        <div className="flex flex-col gap-3 border-b border-ink-600/80 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2">
+            <Zap size={16} className="text-phosphor-soft" />
+            <p className="text-sm font-medium text-ink-50">预约预检</p>
+            <span className="text-[10px] text-ink-300">选好仪器和日期，提前看当日占用与推荐空档</span>
+          </div>
+          <div className="relative w-full sm:w-72">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-300" />
+            <select
+              className="input pl-9 w-full"
+              value={precheckId ?? ""}
+              onChange={(e) => setPrecheckId(e.target.value || null)}
+            >
+              <option value="">选择要预检的仪器…</option>
+              {instruments.filter((i) => i.status !== "offline").map((i) => (
+                <option key={i.id} value={i.id}>{i.name} · {i.model}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {precheck && precheckUser ? (
+          <div className="px-5 py-4">
+            <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <PrecheckCard
+                icon={Clock}
+                label="开放时间"
+                value={precheck.openRange}
+                tone="#2DD4BF"
+              />
+              <PrecheckCard
+                icon={CalendarDays}
+                label="当日预约"
+                value={`${precheck.reservations.length} 条`}
+                tone="#38BDF8"
+              />
+              <PrecheckCard
+                icon={ShieldCheck}
+                label="资质状态"
+                value={precheck.qualStatus === "qualified" ? "已持证" : precheck.qualStatus === "missing" ? "待认证" : "无需"}
+                tone={precheck.qualStatus === "qualified" ? "#34D399" : precheck.qualStatus === "missing" ? "#F59E0B" : "#94A3B8"}
+              />
+              <PrecheckCard
+                icon={Zap}
+                label="可用空档"
+                value={`${precheck.freeSlots.length} 段 / ${precheck.totalFreeHours.toFixed(1)}h`}
+                tone="#A78BFA"
+              />
+            </div>
+
+            {precheck.qualStatus === "missing" && (
+              <div className="mb-4 flex items-start gap-2 rounded-lg bg-amberph/10 p-3 ring-1 ring-inset ring-amberph/30">
+                <AlertTriangle size={15} className="mt-0.5 shrink-0 text-amberph" />
+                <div className="text-xs text-amberph/90">
+                  <p className="font-medium">需持证操作</p>
+                  <p className="mt-0.5">该仪器要求具备资质：{precheck.requiredQualNames.join("、")}。未认证也可提交预约，但可能被管理员驳回。</p>
+                </div>
+              </div>
+            )}
+
+            {precheck.maintenance.length > 0 && (
+              <div className="mb-4">
+                <p className="mb-2 text-[11px] font-medium text-ink-200">当日维护窗口</p>
+                <div className="flex flex-wrap gap-2">
+                  {precheck.maintenance.map((m, i) => (
+                    <Chip key={i} tone="amber">
+                      ⚙ {formatTime(m.start)}–{formatTime(m.end)} · {m.plan.title}
+                    </Chip>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-[11px] font-medium text-ink-200">推荐空闲时段（≥30 分钟）</p>
+                <span className="text-[10px] text-ink-300">点击任意空档快速预约</span>
+              </div>
+              {precheck.freeSlots.length === 0 ? (
+                <div className="rounded-lg bg-ink-900/40 p-4 text-center text-xs text-ink-300">
+                  当日无可预约空档，建议换一天试试
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {precheck.freeSlots.map((slot, i) => {
+                    const startH = Math.floor(slot.start);
+                    const startM = Math.round((slot.start - startH) * 60);
+                    const endH = Math.floor(slot.end);
+                    const endM = Math.round((slot.end - endH) * 60);
+                    const label = `${String(startH).padStart(2, "0")}:${String(startM).padStart(2, "0")} – ${String(endH).padStart(2, "0")}:${String(endM).padStart(2, "0")} · ${slot.hours.toFixed(1)}h`;
+                    const isPast = isBefore(`${dKey}T${String(endH).padStart(2, "0")}:${String(endM).padStart(2, "0")}`, nowISO());
+                    return (
+                      <button
+                        key={i}
+                        disabled={isPast || precheck.instrument.status === "maintenance"}
+                        onClick={() => {
+                          const h = Math.max(startH, precheck.openHour);
+                          setTarget({
+                            instrumentId: precheck.instrument.id,
+                            date: new Date(day),
+                            startHour: h,
+                            durationHours: Math.min(Math.floor(slot.hours), 4),
+                          });
+                        }}
+                        className={cn(
+                          "rounded-md border px-3 py-1.5 text-[11px] font-mono transition-colors",
+                          isPast || precheck.instrument.status === "maintenance"
+                            ? "cursor-not-allowed border-ink-600/60 bg-ink-900/30 text-ink-400"
+                            : "border-phosphor/30 bg-phosphor/5 text-phosphor-soft hover:bg-phosphor/10",
+                        )}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="px-5 py-8 text-center text-xs text-ink-300">
+            <Search size={20} className="mx-auto mb-2 text-ink-400" />
+            <p>选择一台仪器，查看当日预约、维护、持证状态与推荐空档</p>
+          </div>
+        )}
+      </div>
 
       <div className="panel">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-600/80 px-5 py-3">
@@ -281,6 +534,33 @@ function Legend({ color, label }: { color: string; label: string }) {
       <span className={cn("h-2 w-2 rounded-sm", color)} />
       {label}
     </span>
+  );
+}
+
+function PrecheckCard({
+  icon: Icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: typeof Clock;
+  label: string;
+  value: string;
+  tone: string;
+}) {
+  return (
+    <div className="rounded-lg bg-ink-900/40 p-3 ring-1 ring-inset ring-ink-600/60">
+      <div className="flex items-center gap-2">
+        <span
+          className="flex h-7 w-7 items-center justify-center rounded-md ring-1 ring-inset"
+          style={{ color: tone, background: `${tone}10`, borderColor: `${tone}30` }}
+        >
+          <Icon size={13} />
+        </span>
+        <span className="text-[10px] text-ink-300">{label}</span>
+      </div>
+      <p className="mt-2 font-mono text-sm font-semibold" style={{ color: tone }}>{value}</p>
+    </div>
   );
 }
 

@@ -70,7 +70,7 @@ interface LabState {
   approveQualification: (userId: string, qualificationId: string, validityMonths: number) => void;
 
   /** internal, don't call outside the store */
-  _appendAudit: (entry: Omit<AuditLog, "id" | "createdAt" | "actorId"> & { actorId?: string }) => void;
+  _appendAudit: (entry: Omit<AuditLog, "id" | "createdAt" | "actorId"> & { actorId?: string; before?: Record<string, unknown>; after?: Record<string, unknown>; changedFields?: string[] }) => void;
 }
 
 function loadPersisted(seed: SeedShape): Pick<LabState, PersistedField> {
@@ -181,11 +181,14 @@ export const useStore = create<LabState>((set, get) => ({
       persist(next);
       return next;
     });
+    const afterRecord = { ...ins } as unknown as Record<string, unknown>;
     get()._appendAudit({
       action: "instrument.create",
       targetType: "instrument",
       targetId: ins.id,
       summary: `${actor.name} 新增仪器「${ins.name} ${ins.model}」`,
+      after: afterRecord,
+      changedFields: Object.keys(input),
     });
     get().showToast("仪器信息已录入");
     return ins.id;
@@ -194,6 +197,8 @@ export const useStore = create<LabState>((set, get) => ({
   updateInstrument: (id, patch) => {
     const actor = get().users.find((u) => u.id === get().currentUserId)!;
     const prev = get().instruments.find((i) => i.id === id);
+    if (!prev) return;
+    const beforeRecord = { ...prev } as unknown as Record<string, unknown>;
     set((s) => {
       const next = {
         instruments: s.instruments.map((i) => (i.id === id ? { ...i, ...patch } : i)),
@@ -203,12 +208,20 @@ export const useStore = create<LabState>((set, get) => ({
     });
     const after = get().instruments.find((i) => i.id === id);
     if (prev && after) {
-      const changed = fieldDiff(prev as unknown as Record<string, unknown>, after as unknown as Record<string, unknown>, patch as Record<string, unknown>);
+      const diff = fieldDiff(
+        prev as unknown as Record<string, unknown>,
+        after as unknown as Record<string, unknown>,
+        patch as Record<string, unknown>,
+      );
+      const afterRecord = { ...after } as unknown as Record<string, unknown>;
       get()._appendAudit({
         action: "instrument.update",
         targetType: "instrument",
         targetId: id,
-        summary: `${actor.name} 更新仪器「${after.name}」${changed ? `：${changed}` : ""}`,
+        summary: `${actor.name} 更新仪器「${after.name}」· ${diff.summary}`,
+        before: beforeRecord,
+        after: afterRecord,
+        changedFields: diff.changedFields,
       });
     }
     get().showToast("仪器信息已更新");
@@ -216,6 +229,8 @@ export const useStore = create<LabState>((set, get) => ({
 
   offlineInstrument: (id) => {
     const actor = get().users.find((u) => u.id === get().currentUserId)!;
+    const prev = get().instruments.find((i) => i.id === id);
+    const beforeRecord = prev ? { ...prev } as unknown as Record<string, unknown> : undefined;
     set((s) => {
       const next = {
         instruments: s.instruments.map((i) => (i.id === id ? { ...i, status: "offline" as const } : i)),
@@ -225,11 +240,15 @@ export const useStore = create<LabState>((set, get) => ({
     });
     const ins = get().instruments.find((i) => i.id === id);
     if (ins) {
+      const afterRecord = { ...ins } as unknown as Record<string, unknown>;
       get()._appendAudit({
         action: "instrument.offline",
         targetType: "instrument",
         targetId: id,
         summary: `${actor.name} 下线仪器「${ins.name}」`,
+        before: beforeRecord,
+        after: afterRecord,
+        changedFields: ["status"],
       });
     }
     get().showToast("仪器已下线，预约被屏蔽");
@@ -419,6 +438,11 @@ export const useStore = create<LabState>((set, get) => ({
 
   // ---- Maintenance ----
   addMaintenancePlan: (input) => {
+    const errors = validateMaintenanceInput(input, false);
+    if (errors.length > 0) {
+      get().showToast(errors[0]);
+      return "";
+    }
     const actor = get().users.find((u) => u.id === get().currentUserId)!;
     const plan: MaintenancePlan = {
       id: uid("m"),
@@ -447,18 +471,30 @@ export const useStore = create<LabState>((set, get) => ({
       return next;
     });
     const ins = get().instruments.find((i) => i.id === input.instrumentId);
+    const afterRecord = { ...plan } as unknown as Record<string, unknown>;
     get()._appendAudit({
       action: "maintenance.create",
       targetType: "maintenance",
       targetId: plan.id,
       summary: `${actor.name} 创建「${ins?.name ?? "仪器"}」维护计划：${plan.title}，${formatRange(plan.start, plan.end)}${plan.recurrence !== "none" ? ` (${recurrenceLabel(plan.recurrence)})` : ""}`,
+      after: afterRecord,
+      changedFields: Object.keys(input),
     });
     get().showToast("维护计划已录入，对应时段已屏蔽预约");
     return plan.id;
   },
 
   updateMaintenancePlan: (id, patch) => {
+    const prev = get().maintenancePlans.find((p) => p.id === id);
+    if (!prev) return;
+    const merged = { ...prev, ...patch } as unknown as NewMaintenanceInput;
+    const errors = validateMaintenanceInput(merged, true);
+    if (errors.length > 0) {
+      get().showToast(errors[0]);
+      return;
+    }
     const actor = get().users.find((u) => u.id === get().currentUserId)!;
+    const prevRecord = { ...prev } as unknown as Record<string, unknown>;
     set((s) => {
       const next = {
         maintenancePlans: s.maintenancePlans.map((p) => (p.id === id ? { ...p, ...patch } : p)),
@@ -469,11 +505,16 @@ export const useStore = create<LabState>((set, get) => ({
     const plan = get().maintenancePlans.find((p) => p.id === id);
     const ins = plan ? get().instruments.find((i) => i.id === plan.instrumentId) : null;
     if (plan && ins) {
+      const afterRecord = { ...plan } as unknown as Record<string, unknown>;
+      const diff = fieldDiff(prevRecord, afterRecord, patch as unknown as Record<string, unknown>);
       get()._appendAudit({
         action: "maintenance.update",
         targetType: "maintenance",
         targetId: id,
-        summary: `${actor.name} 更新「${ins.name}」维护计划「${plan.title}」`,
+        summary: `${actor.name} 更新「${ins.name}」维护计划「${plan.title}」· ${diff.summary}`,
+        before: prevRecord,
+        after: afterRecord,
+        changedFields: diff.changedFields,
       });
     }
     get().showToast("维护计划已更新");
@@ -483,6 +524,7 @@ export const useStore = create<LabState>((set, get) => ({
     const actor = get().users.find((u) => u.id === get().currentUserId)!;
     const plan = get().maintenancePlans.find((p) => p.id === id);
     const ins = plan ? get().instruments.find((i) => i.id === plan.instrumentId) : null;
+    const beforeRecord = plan ? { ...plan } as unknown as Record<string, unknown> : undefined;
     set((s) => {
       const next = { maintenancePlans: s.maintenancePlans.filter((m) => m.id !== id) };
       persist(next);
@@ -494,6 +536,7 @@ export const useStore = create<LabState>((set, get) => ({
         targetType: "maintenance",
         targetId: id,
         summary: `${actor.name} 删除「${ins.name}」维护计划「${plan.title}」`,
+        before: beforeRecord,
       });
     }
     get().showToast("维护计划已删除");
@@ -502,6 +545,10 @@ export const useStore = create<LabState>((set, get) => ({
   // ---- Qualifications ----
   approveQualification: (userId, qualificationId, validityMonths) => {
     const actor = get().users.find((u) => u.id === get().currentUserId)!;
+    const prevRecord = get().qualificationRecords.find(
+      (q) => q.userId === userId && q.qualificationId === qualificationId,
+    );
+    const beforeRecord = prevRecord ? { ...prevRecord } as unknown as Record<string, unknown> : undefined;
     const granted = new Date();
     const expire = addDays(granted, validityMonths * 30);
     const record: QualificationRecord = {
@@ -526,24 +573,34 @@ export const useStore = create<LabState>((set, get) => ({
     const target = get().users.find((u) => u.id === userId);
     const qual = get().qualifications.find((q) => q.id === qualificationId);
     if (target && qual) {
+      const afterRecord = { ...record } as unknown as Record<string, unknown>;
       get()._appendAudit({
         action: "qualification.grant",
         targetType: "qualification",
         targetId: `${userId}-${qualificationId}`,
         summary: `${actor.name} 为 ${target.name} 授予/续期资质「${qual.name}」(${qual.abbr})，有效期 ${validityMonths} 月`,
+        before: beforeRecord,
+        after: afterRecord,
+        changedFields: ["grantedAt", "expireAt"],
       });
     }
     get().showToast("资质认证已更新");
   },
 
   // ---- private helper on the instance ----
-  _appendAudit: (entry: Omit<AuditLog, "id" | "createdAt" | "actorId"> & { actorId?: string }) => {
+  _appendAudit: (entry) => {
     const actorId = entry.actorId ?? get().currentUserId;
     const log: AuditLog = {
       id: uid("aud"),
       actorId,
       createdAt: nowISO(),
-      ...entry,
+      action: entry.action,
+      targetType: entry.targetType,
+      targetId: entry.targetId,
+      summary: entry.summary,
+      before: entry.before,
+      after: entry.after,
+      changedFields: entry.changedFields,
     };
     set((s) => {
       const next = { auditLogs: [log, ...s.auditLogs].slice(0, 500) };
@@ -601,21 +658,31 @@ function formatRange(start: string, end: string): string {
   return `${sStr}–${eStr}`;
 }
 
-function fieldDiff(prev: Record<string, unknown>, after: Record<string, unknown>, patch: Record<string, unknown>): string {
+function fieldDiff(prev: Record<string, unknown>, after: Record<string, unknown>, patch: Record<string, unknown>): { changedFields: string[]; summary: string } {
   const touched = Object.keys(patch);
   const friendly: Record<string, string> = {
     name: "名称", model: "型号", code: "资产编号", category: "分类", location: "位置",
     manual: "手册", requirements: "操作要求", requiresQualification: "资质要求",
     qualificationIds: "关联资质", dailyOpenHour: "开放时间", dailyCloseHour: "关闭时间",
-    utilizationTarget: "目标利用率", status: "运行状态",
+    utilizationTarget: "目标利用率", status: "运行状态", acquisitionDate: "购入日期",
+    title: "标题", start: "开始时间", end: "结束时间", recurrence: "重复规则",
+    assignee: "负责人", note: "说明", instrumentId: "目标仪器",
+    expireAt: "到期时间", grantedAt: "授予时间",
   };
+  const changed: string[] = [];
   const parts: string[] = [];
   touched.forEach((k) => {
     const before = JSON.stringify(prev[k]);
     const afterStr = JSON.stringify(after[k]);
-    if (before !== afterStr) parts.push(friendly[k] ?? k);
+    if (before !== afterStr) {
+      changed.push(k);
+      parts.push(friendly[k] ?? k);
+    }
   });
-  return parts.length ? `修改 ${parts.join("、")}` : "";
+  return {
+    changedFields: changed,
+    summary: parts.length ? `修改 ${parts.join("、")}` : "无字段变更",
+  };
 }
 
 function recurrenceLabel(r: "none" | "daily" | "weekly" | "monthly"): string {
@@ -624,6 +691,29 @@ function recurrenceLabel(r: "none" | "daily" | "weekly" | "monthly"): string {
 
 function healthLabel(h: "normal" | "minor_issue" | "fault"): string {
   return ({ normal: "正常", minor_issue: "轻微异常", fault: "故障报修" } as const)[h];
+}
+
+function validateMaintenanceInput(input: NewMaintenanceInput | UpdateMaintenanceInput, isEdit = false): string[] {
+  const errors: string[] = [];
+  if (!isEdit) {
+    if (!input.title?.trim()) errors.push("请填写维护标题");
+    if (!input.instrumentId) errors.push("请选择目标仪器");
+  }
+  if (input.title !== undefined && !input.title.trim()) errors.push("维护标题不能为空");
+  if (input.assignee !== undefined && !input.assignee.trim()) errors.push("请指定维护负责人");
+  if (input.start !== undefined || input.end !== undefined) {
+    const s = input.start ? parseISO(input.start) : null;
+    const e = input.end ? parseISO(input.end) : null;
+    if (s && e && e <= s) {
+      errors.push("结束时间必须晚于开始时间");
+    }
+    if (s && e) {
+      const durHours = (e.getTime() - s.getTime()) / (1000 * 60 * 60);
+      if (durHours < 0.5) errors.push("维护窗口至少需要 30 分钟");
+      if (durHours > 24) errors.push("单次维护窗口不能超过 24 小时");
+    }
+  }
+  return errors;
 }
 
 /** expand maintenance occurrences for an instrument within [start, end], returns individual {start,end,plan} blocks */

@@ -175,4 +175,7 @@ export interface AuditLog {
   targetId: string;
   summary: string;
   createdAt: string;
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+  changedFields?: string[];
 }
