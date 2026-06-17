@@ -179,10 +179,12 @@ export default function Calendar() {
     const closeH = ins.dailyCloseHour;
     if (closeH <= openH) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    // click only meaningful within [openH, closeH] as rendered
     const left = ((openH - GLOBAL_OPEN) / GLOBAL_SPAN) * rect.width;
     const right = ((closeH - GLOBAL_OPEN) / GLOBAL_SPAN) * rect.width;
-    const x = Math.min(Math.max(e.clientX - rect.left, left), right - 1);
+    const clickX = e.clientX - rect.left;
+    // click must be inside the open window; ignore clicks on grey dim areas
+    if (clickX < left || clickX >= right) return;
+    const x = clickX;
     const hourFloat = ((x - left) / (right - left)) * (closeH - openH) + openH;
     const hour = Math.max(openH, Math.min(closeH - 1, Math.floor(hourFloat)));
     const maintNow = maintByInstrument.get(instrumentId) ?? [];
@@ -439,11 +441,11 @@ export default function Calendar() {
 
                       {/* closed outside open hours — grey dim strip */}
                       <div
-                        className="absolute top-0 bottom-0 bg-ink-900/60"
+                        className="absolute top-0 bottom-0 cursor-not-allowed bg-ink-900/60"
                         style={{ left: 0, width: `${leftPct}%` }}
                       />
                       <div
-                        className="absolute top-0 bottom-0 bg-ink-900/60"
+                        className="absolute top-0 bottom-0 cursor-not-allowed bg-ink-900/60"
                         style={{ left: `${leftPct + widthPct}%`, right: 0 }}
                       />
 

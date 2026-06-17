@@ -71,6 +71,8 @@ interface LabState {
 
   /** internal, don't call outside the store */
   _appendAudit: (entry: Omit<AuditLog, "id" | "createdAt" | "actorId"> & { actorId?: string; before?: Record<string, unknown>; after?: Record<string, unknown>; changedFields?: string[] }) => void;
+  /** internal, don't call outside the store */
+  _refreshMaintStatus: (instrumentId: string) => void;
 }
 
 function loadPersisted(seed: SeedShape): Pick<LabState, PersistedField> {
@@ -460,16 +462,7 @@ export const useStore = create<LabState>((set, get) => ({
       persist(next);
       return next;
     });
-    set((s) => {
-      const instruments = s.instruments.map((i) =>
-        i.id === input.instrumentId && isInMaintenance([...s.maintenancePlans], i.id, nowISO(), nowISO())
-          ? { ...i, status: "maintenance" as const }
-          : i,
-      );
-      const next = { instruments };
-      persist(next);
-      return next;
-    });
+    get()._refreshMaintStatus(input.instrumentId);
     const ins = get().instruments.find((i) => i.id === input.instrumentId);
     const afterRecord = { ...plan } as unknown as Record<string, unknown>;
     get()._appendAudit({
@@ -517,6 +510,11 @@ export const useStore = create<LabState>((set, get) => ({
         changedFields: diff.changedFields,
       });
     }
+    // refresh status for both old and new instrument in case instrumentId changed
+    if (prev.instrumentId !== plan?.instrumentId) {
+      get()._refreshMaintStatus(prev.instrumentId);
+    }
+    if (plan) get()._refreshMaintStatus(plan.instrumentId);
     get().showToast("维护计划已更新");
   },
 
@@ -539,6 +537,7 @@ export const useStore = create<LabState>((set, get) => ({
         before: beforeRecord,
       });
     }
+    if (plan) get()._refreshMaintStatus(plan.instrumentId);
     get().showToast("维护计划已删除");
   },
 
@@ -604,6 +603,28 @@ export const useStore = create<LabState>((set, get) => ({
     };
     set((s) => {
       const next = { auditLogs: [log, ...s.auditLogs].slice(0, 500) };
+      persist(next);
+      return next;
+    });
+  },
+
+  /** Refresh instrument status based on whether it's currently under maintenance */
+  _refreshMaintStatus: (instrumentId: string) => {
+    const now = nowISO();
+    set((s) => {
+      const instruments = s.instruments.map((i) => {
+        if (i.id !== instrumentId) return i;
+        if (i.status === "offline") return i;
+        const inMaint = isInMaintenance(s.maintenancePlans, i.id, now, now);
+        if (inMaint && i.status !== "maintenance") {
+          return { ...i, status: "maintenance" as const };
+        }
+        if (!inMaint && i.status === "maintenance") {
+          return { ...i, status: "available" as const };
+        }
+        return i;
+      });
+      const next = { instruments };
       persist(next);
       return next;
     });

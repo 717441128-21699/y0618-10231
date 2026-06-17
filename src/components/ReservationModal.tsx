@@ -38,6 +38,24 @@ export function ReservationModal({
   const [duration, setDuration] = useState(target.durationHours ?? 2);
   const [purpose, setPurpose] = useState("");
 
+  useEffect(() => {
+    if (!open) return;
+    const ins = instruments.find((i) => i.id === target.instrumentId) ?? instruments[0];
+    setInstrumentId(ins.id);
+    setDateStr(target.date ? dayKey(target.date) : dayKey(addDays(new Date(), 1)));
+    const h = target.startHour ?? ins.dailyOpenHour;
+    const clampedH = Math.max(ins.dailyOpenHour, Math.min(h, ins.dailyCloseHour - 1));
+    setStartHour(clampedH);
+    const maxDur = ins.dailyCloseHour - clampedH;
+    const preferredDur = target.durationHours ?? 2;
+    const validDurOptions = [0.5, 1, 1.5, 2, 3, 4, 5, 6].filter((d) => d <= maxDur);
+    const bestDur = validDurOptions.includes(preferredDur)
+      ? preferredDur
+      : validDurOptions[validDurOptions.length - 1] ?? 0.5;
+    setDuration(bestDur);
+    setPurpose("");
+  }, [open, target, instruments]);
+
   const instrument: Instrument = instruments.find((i) => i.id === instrumentId) ?? initialInstrument;
 
   // clamp startHour and duration to the instrument's open window
