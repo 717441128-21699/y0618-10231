@@ -36,7 +36,7 @@ export function Chip({
 }: {
   children: React.ReactNode;
   className?: string;
-  tone?: "default" | "phosphor" | "amber" | "violet" | "sky";
+  tone?: "default" | "phosphor" | "amber" | "violet" | "sky" | "rose" | "emerald";
 }) {
   const tones: Record<string, string> = {
     default: "bg-ink-700/50 text-ink-100 ring-ink-500",
@@ -44,6 +44,8 @@ export function Chip({
     amber: "bg-amberph/10 text-amberph ring-amberph/30",
     violet: "bg-violeph/10 text-violeph ring-violeph/30",
     sky: "bg-skyph/10 text-skyph ring-skyph/30",
+    rose: "bg-roseph/10 text-roseph ring-roseph/30",
+    emerald: "bg-emeraldph/10 text-emeraldph ring-emeraldph/30",
   };
   return <span className={cn("chip", tones[tone], className)}>{children}</span>;
 }

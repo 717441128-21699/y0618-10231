@@ -9,6 +9,7 @@ import {
   Wrench,
   Award,
   BarChart3,
+  ScrollText,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -51,6 +52,7 @@ export const navSections: NavSection[] = [
   {
     title: "系统与决策",
     items: [
+      { to: "/audit", label: "操作记录", icon: ScrollText, roles: ["admin", "director"] },
       { to: "/qualifications", label: "资质管理", icon: Award, roles: ["director", "admin"] },
       { to: "/analytics", label: "统计分析", icon: BarChart3 },
     ],

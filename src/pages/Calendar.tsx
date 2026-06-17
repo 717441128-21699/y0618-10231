@@ -1,17 +1,18 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { useStore } from "@/store/useStore";
+import { useStore, maintenanceOccurrences } from "@/store/useStore";
 import { PageHeader } from "@/components/ui/EmptyState";
 import { ReservationModal } from "@/components/ReservationModal";
-import { reservationStatusMeta } from "@/lib/status";
-import { addDays, dayKey, formatDateTimeCN, formatTime, parseISO, weekdayCN } from "@/lib/date";
-import { ChevronLeft, ChevronRight, CalendarDays, MousePointerClick } from "lucide-react";
+import { reservationStatusMeta, instrumentStatusMeta } from "@/lib/status";
+import { addDays, dayKey, formatDateTimeCN, formatTime, parseISO, weekdayCN, nowISO, isBefore, dayKey as dk } from "@/lib/date";
+import { ChevronLeft, ChevronRight, CalendarDays, MousePointerClick, ShieldCheck, Clock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ReservationTarget } from "@/components/ReservationModal";
+import type { MaintenancePlan } from "@/types";
 
-const OPEN = 8;
-const CLOSE = 22;
-const SPAN = CLOSE - OPEN;
+const GLOBAL_OPEN = 8;
+const GLOBAL_CLOSE = 22;
+const GLOBAL_SPAN = GLOBAL_CLOSE - GLOBAL_OPEN;
 
 export default function Calendar() {
   const instruments = useStore((s) => s.instruments);
@@ -26,6 +27,8 @@ export default function Calendar() {
 
   const dKey = dayKey(day);
   const isToday = dKey === dayKey(new Date());
+  const rangeStart = `${dKey}T00:00`;
+  const rangeEnd = `${dKey}T23:59`;
 
   const dayResByInstrument = useMemo(() => {
     const map = new Map<string, typeof reservations>();
@@ -38,11 +41,35 @@ export default function Calendar() {
     return map;
   }, [reservations, instruments, dKey]);
 
+  const maintByInstrument = useMemo(() => {
+    const map = new Map<string, { start: string; end: string; plan: MaintenancePlan }[]>();
+    instruments.forEach((i) => {
+      map.set(i.id, maintenanceOccurrences(maintenancePlans, i.id, rangeStart, rangeEnd));
+    });
+    return map;
+  }, [maintenancePlans, instruments, rangeStart, rangeEnd]);
+
   const handleRowClick = (e: React.MouseEvent<HTMLDivElement>, instrumentId: string) => {
+    const ins = instruments.find((x) => x.id === instrumentId)!;
+    const openH = ins.dailyOpenHour;
+    const closeH = ins.dailyCloseHour;
+    if (closeH <= openH) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const hourFloat = (x / rect.width) * SPAN + OPEN;
-    const hour = Math.max(OPEN, Math.min(CLOSE - 1, Math.floor(hourFloat)));
+    // click only meaningful within [openH, closeH] as rendered
+    const left = ((openH - GLOBAL_OPEN) / GLOBAL_SPAN) * rect.width;
+    const right = ((closeH - GLOBAL_OPEN) / GLOBAL_SPAN) * rect.width;
+    const x = Math.min(Math.max(e.clientX - rect.left, left), right - 1);
+    const hourFloat = ((x - left) / (right - left)) * (closeH - openH) + openH;
+    const hour = Math.max(openH, Math.min(closeH - 1, Math.floor(hourFloat)));
+    const maintNow = maintByInstrument.get(instrumentId) ?? [];
+    const clickedStart = `${dKey}T${String(hour).padStart(2, "0")}:00`;
+    const clickedEnd = `${dKey}T${String(hour + 1).padStart(2, "0")}:00`;
+    const blocked = maintNow.some(
+      (m) => parseISO(m.start) < parseISO(clickedEnd) && parseISO(m.end) > parseISO(clickedStart),
+    );
+    if (blocked || isBefore(clickedEnd, nowISO()) || ins.status === "offline" || ins.status === "maintenance") {
+      return;
+    }
     setTarget({ instrumentId, date: day, startHour: hour, durationHours: 1 });
   };
 
@@ -51,7 +78,7 @@ export default function Calendar() {
       <PageHeader
         eyebrow="预约中心"
         title="跨仪器预约日历"
-        description="以仪器为行、时段为列查看当日占用，点击空闲时段即可发起预约；维护窗口自动屏蔽。"
+        description="以仪器为行、时段为列查看当日占用，点击空闲时段即可发起预约；维护窗口按精确小时段自动屏蔽。"
         actions={
           <div className="flex items-center gap-1">
             <button onClick={() => setDay((d) => addDays(d, -1))} className="btn-subtle h-9 w-9 p-0"><ChevronLeft size={16} /></button>
@@ -73,7 +100,7 @@ export default function Calendar() {
           <div className="flex items-center gap-3 text-[10px] text-ink-300">
             <Legend color="bg-phosphor" label="使用中" />
             <Legend color="bg-skyph" label="已批准" />
-            <Legend color="bg-amberph" label="待审核/维护" />
+            <Legend color="bg-amberph" label="待审核 / 维护" />
             <Legend color="bg-emeraldph" label="已完成" />
             <span className="hidden items-center gap-1 sm:flex">
               <MousePointerClick size={11} /> 点击空闲时段预约
@@ -85,10 +112,10 @@ export default function Calendar() {
           <div className="min-w-[820px]">
             {/* hour ruler */}
             <div className="flex border-b border-ink-600/60">
-              <div className="w-44 shrink-0 px-4 py-2 tick-label">仪器</div>
+              <div className="w-56 shrink-0 px-4 py-2 tick-label">仪器 / 开放时段</div>
               <div className="relative flex-1">
                 <div className="flex">
-                  {Array.from({ length: SPAN }, (_, i) => OPEN + i).map((h) => (
+                  {Array.from({ length: GLOBAL_SPAN }, (_, i) => GLOBAL_OPEN + i).map((h) => (
                     <div key={h} className="flex-1 border-l border-ink-600/40 py-1.5 text-center font-mono text-[9px] text-ink-300">
                       {String(h).padStart(2, "0")}
                     </div>
@@ -100,80 +127,138 @@ export default function Calendar() {
             {/* instrument rows */}
             <div className="divide-y divide-ink-600/40">
               {instruments.map((ins) => {
+                const openH = ins.dailyOpenHour;
+                const closeH = ins.dailyCloseHour;
+                const span = Math.max(closeH - openH, 0);
+                const leftPct = ((openH - GLOBAL_OPEN) / GLOBAL_SPAN) * 100;
+                const widthPct = (span / GLOBAL_SPAN) * 100;
+
                 const dayRes = dayResByInstrument.get(ins.id) ?? [];
-                const isMaintenanceDay = maintenancePlans.some(
-                  (m) => m.instrumentId === ins.id && m.start <= `${dKey}T23:59` && m.end >= `${dKey}T00:00`,
-                );
+                const dayMaint = maintByInstrument.get(ins.id) ?? [];
+                const insMeta = instrumentStatusMeta[ins.status];
+                const offlineOrMaint = ins.status === "offline" || ins.status === "maintenance";
+
                 return (
                   <div key={ins.id} className="flex items-stretch hover:bg-ink-700/20">
                     <Link
                       to={`/instruments/${ins.id}`}
-                      className="flex w-44 shrink-0 items-center gap-2 px-4 py-3"
+                      className="flex w-56 shrink-0 items-center gap-2 px-4 py-3"
                     >
-                      <span className="flex h-7 w-7 items-center justify-center rounded-md bg-ink-900/60 ring-1 ring-inset ring-ink-500 text-[10px] font-mono text-phosphor-soft">
+                      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-ink-900/60 ring-1 ring-inset ring-ink-500 text-[10px] font-mono text-phosphor-soft">
                         {ins.code.split("-")[0]}
                       </span>
-                      <div className="min-w-0">
-                        <p className="truncate text-xs font-medium text-ink-50">{ins.name}</p>
-                        <p className="font-mono text-[9px] text-ink-300">{ins.code}</p>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <p className="truncate text-xs font-medium text-ink-50">{ins.name}</p>
+                          <span className={cn("chip", insMeta.bg, insMeta.text, insMeta.ring)} style={{ padding: "1px 5px" }}>
+                            {insMeta.label}
+                          </span>
+                        </div>
+                        <p className="flex items-center gap-2 font-mono text-[9px] text-ink-300">
+                          <Clock size={9} />
+                          {String(openH).padStart(2, "0")}:00 – {String(closeH).padStart(2, "0")}:00
+                          {ins.requiresQualification && (
+                            <span className="flex items-center gap-0.5 text-amberph"><ShieldCheck size={9} />需证</span>
+                          )}
+                        </p>
                       </div>
                     </Link>
+
                     <div
-                      className="relative flex-1 cursor-crosshair"
-                      style={{ height: 52 }}
-                      onClick={(e) => !isMaintenanceDay && handleRowClick(e, ins.id)}
+                      className={cn(
+                        "relative flex-1",
+                        !offlineOrMaint && "cursor-crosshair",
+                        offlineOrMaint && "cursor-not-allowed opacity-60",
+                      )}
+                      style={{ height: 56 }}
+                      onClick={(e) => !offlineOrMaint && handleRowClick(e, ins.id)}
                       onMouseEnter={() => setHovered(ins.id)}
                       onMouseLeave={() => setHovered(null)}
                     >
-                      {/* hour gridlines */}
-                      {Array.from({ length: SPAN }, (_, i) => (
+                      {/* vertical time tick dividers */}
+                      {Array.from({ length: GLOBAL_SPAN + 1 }, (_, i) => (
                         <span
-                          key={i}
+                          key={`g-${i}`}
                           className="absolute top-0 h-full border-l border-ink-600/30"
-                          style={{ left: `${(i / SPAN) * 100}%` }}
+                          style={{ left: `${(i / GLOBAL_SPAN) * 100}%` }}
                         />
                       ))}
-                      {hovered === ins.id && !isMaintenanceDay && (
-                        <div className="pointer-events-none absolute inset-0 bg-phosphor/[0.03]" />
-                      )}
 
-                      {/* maintenance overlay */}
-                      {isMaintenanceDay && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-amberph/10 text-[10px] text-amberph">
-                          维护屏蔽 · 不可预约
-                        </div>
-                      )}
+                      {/* closed outside open hours — grey dim strip */}
+                      <div
+                        className="absolute top-0 bottom-0 bg-ink-900/60"
+                        style={{ left: 0, width: `${leftPct}%` }}
+                      />
+                      <div
+                        className="absolute top-0 bottom-0 bg-ink-900/60"
+                        style={{ left: `${leftPct + widthPct}%`, right: 0 }}
+                      />
+
+                      {/* open window */}
+                      <div
+                        className={cn(
+                          "absolute top-1 bottom-1 rounded-md border border-phosphor/10",
+                          hovered === ins.id && !offlineOrMaint && "bg-phosphor/[0.04]",
+                        )}
+                        style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                      />
+
+                      {/* maintenance blocks (exact hour precision) */}
+                      {dayMaint.map((m, idx) => {
+                        const s = parseISO(m.start);
+                        const e = parseISO(m.end);
+                        const sH = s.getHours() + s.getMinutes() / 60;
+                        const eH = e.getHours() + e.getMinutes() / 60;
+                        const clampStart = Math.max(sH, openH, GLOBAL_OPEN);
+                        const clampEnd = Math.min(eH, closeH, GLOBAL_CLOSE);
+                        if (clampEnd <= clampStart) return null;
+                        const mL = ((clampStart - GLOBAL_OPEN) / GLOBAL_SPAN) * 100;
+                        const mW = ((clampEnd - clampStart) / GLOBAL_SPAN) * 100;
+                        return (
+                          <div
+                            key={`${m.plan.id}-${idx}`}
+                            className="absolute top-1 bottom-1 z-10 flex items-center justify-center overflow-hidden rounded-md border border-dashed border-amberph/50 bg-amberph/10 px-2 text-[9px] text-amberph"
+                            style={{ left: `${mL}%`, width: `${mW}%` }}
+                            title={`维护：${m.plan.title} · ${formatTime(m.start)}–${formatTime(m.end)}`}
+                          >
+                            {((clampEnd - clampStart) >= 1.2) ? (
+                              <span className="truncate">{m.plan.title}</span>
+                            ) : (
+                              <span className="font-mono">⚙ {formatTime(m.start)}</span>
+                            )}
+                          </div>
+                        );
+                      })}
 
                       {/* reservation bars */}
-                      {!isMaintenanceDay &&
-                        dayRes.map((r) => {
-                          const start = parseISO(r.start);
-                          const end = parseISO(r.end);
-                          const startH = start.getHours() + start.getMinutes() / 60;
-                          const endH = end.getHours() + end.getMinutes() / 60;
-                          const left = ((startH - OPEN) / SPAN) * 100;
-                          const width = ((endH - startH) / SPAN) * 100;
-                          const meta = reservationStatusMeta[r.status];
-                          const user = users.find((u) => u.id === r.userId)!;
-                          const group = groups.find((g) => g.id === r.groupId)!;
-                          return (
-                            <div
-                              key={r.id}
-                              className={cn(
-                                "absolute top-1 bottom-1 flex items-center gap-1 overflow-hidden rounded px-2 text-[10px] ring-1 ring-inset",
-                                meta.bg,
-                                meta.text,
-                                meta.ring,
-                              )}
-                              style={{ left: `${left}%`, width: `${width}%` }}
-                              title={`${formatTime(r.start)}–${formatTime(r.end)} · ${user.name}（${group.shortName}）· ${r.purpose}`}
-                            >
-                              <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: group.color }} />
-                              <span className="truncate font-medium">{user.name}</span>
-                              {width > 18 && <span className="truncate opacity-70">{group.shortName}</span>}
-                            </div>
-                          );
-                        })}
+                      {dayRes.map((r) => {
+                        const s = parseISO(r.start);
+                        const e = parseISO(r.end);
+                        const sH = s.getHours() + s.getMinutes() / 60;
+                        const eH = e.getHours() + e.getMinutes() / 60;
+                        const left = ((sH - GLOBAL_OPEN) / GLOBAL_SPAN) * 100;
+                        const width = ((eH - sH) / GLOBAL_SPAN) * 100;
+                        const meta = reservationStatusMeta[r.status];
+                        const user = users.find((u) => u.id === r.userId)!;
+                        const group = groups.find((g) => g.id === r.groupId)!;
+                        return (
+                          <div
+                            key={r.id}
+                            className={cn(
+                              "absolute top-2 bottom-2 z-20 flex items-center gap-1 overflow-hidden rounded px-2 text-[10px] ring-1 ring-inset",
+                              meta.bg,
+                              meta.text,
+                              meta.ring,
+                            )}
+                            style={{ left: `${left}%`, width: `${width}%` }}
+                            title={`${formatTime(r.start)}–${formatTime(r.end)} · ${user.name}（${group.shortName}）· ${r.purpose}`}
+                          >
+                            <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: group.color }} />
+                            {width > 8 && <span className="truncate font-medium">{user.name}</span>}
+                            {width > 14 && <span className="hidden truncate opacity-70 sm:inline">{group.shortName}</span>}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
@@ -198,3 +283,5 @@ function Legend({ color, label }: { color: string; label: string }) {
     </span>
   );
 }
+
+void dk;

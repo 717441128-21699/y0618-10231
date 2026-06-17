@@ -36,6 +36,24 @@ export interface Instrument {
   utilizationTarget: number;
 }
 
+export interface NewInstrumentInput {
+  name: string;
+  model: string;
+  code: string;
+  category: string;
+  location: string;
+  manual: string;
+  requirements: string;
+  requiresQualification: boolean;
+  qualificationIds: string[];
+  dailyOpenHour: number;
+  dailyCloseHour: number;
+  acquisitionDate: string;
+  utilizationTarget: number;
+}
+
+export type UpdateInstrumentInput = Partial<NewInstrumentInput> & { status?: InstrumentStatus };
+
 export interface Qualification {
   id: string;
   name: string;
@@ -123,6 +141,8 @@ export interface NewMaintenanceInput {
   note: string;
 }
 
+export type UpdateMaintenanceInput = Partial<NewMaintenanceInput>;
+
 export interface NewLogInput {
   reservationId: string;
   instrumentId: string;
@@ -130,4 +150,29 @@ export interface NewLogInput {
   instrumentStatus: InstrumentHealth;
   anomaly: string;
   consumables: string;
+}
+
+export type AuditAction =
+  | "reservation.approve"
+  | "reservation.reject"
+  | "reservation.cancel"
+  | "reservation.create"
+  | "reservation.complete"
+  | "maintenance.create"
+  | "maintenance.update"
+  | "maintenance.remove"
+  | "qualification.grant"
+  | "instrument.create"
+  | "instrument.update"
+  | "instrument.offline"
+  | "system.reset";
+
+export interface AuditLog {
+  id: string;
+  action: AuditAction;
+  actorId: string;
+  targetType: "reservation" | "maintenance" | "qualification" | "instrument" | "system";
+  targetId: string;
+  summary: string;
+  createdAt: string;
 }

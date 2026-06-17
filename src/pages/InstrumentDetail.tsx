@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { useStore } from "@/store/useStore";
+import { useStore, maintenanceOccurrences } from "@/store/useStore";
 import { PageHeader } from "@/components/ui/EmptyState";
 import { Ring, Bar } from "@/components/ui/Ring";
 import { StatusBadge, Chip } from "@/components/ui/Badge";
@@ -14,10 +14,12 @@ import {
   formatTime,
   parseISO,
   startOfWeek,
+  startOfDay,
+  addHours,
+  toISO,
   weekdayCN,
   formatDateTimeCN,
   isBefore,
-  overlaps,
   nowISO,
 } from "@/lib/date";
 import {
@@ -57,6 +59,16 @@ export default function InstrumentDetail() {
     () => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
     [weekStart],
   );
+  const weekRangeStart = useMemo(() => toISO(startOfDay(weekDays[0])), [weekDays]);
+  const weekRangeEnd = useMemo(() => toISO(addHours(startOfDay(weekDays[6]), 30)), [weekDays]);
+
+  const insReservations = ins ? reservations.filter((r) => r.instrumentId === ins.id) : [];
+  const insLogs = ins ? logs.filter((l) => l.instrumentId === ins.id).slice(0, 5) : [];
+  const insMaintenance = ins ? maintenancePlans.filter((m) => m.instrumentId === ins.id) : [];
+  const insMaintenanceAll = useMemo(
+    () => (ins ? maintenanceOccurrences(maintenancePlans, ins.id, weekRangeStart, weekRangeEnd) : []),
+    [maintenancePlans, ins, weekRangeStart, weekRangeEnd],
+  );
 
   if (!ins) {
     return (
@@ -70,10 +82,6 @@ export default function InstrumentDetail() {
   const util = instrumentUtilization(ins, reservations, 30);
   const meta = instrumentStatusMeta[ins.status];
   const requiredQuals = qualifications.filter((q) => ins.qualificationIds.includes(q.id));
-
-  const insReservations = reservations.filter((r) => r.instrumentId === ins.id);
-  const insLogs = logs.filter((l) => l.instrumentId === ins.id).slice(0, 5);
-  const insMaintenance = maintenancePlans.filter((m) => m.instrumentId === ins.id);
 
   const openHour = ins.dailyOpenHour;
   const closeHour = ins.dailyCloseHour;
@@ -96,7 +104,7 @@ export default function InstrumentDetail() {
         actions={
           <button
             className="btn-primary"
-            disabled={ins.status === "maintenance"}
+            disabled={ins.status === "maintenance" || ins.status === "offline"}
             onClick={() => setTarget({ instrumentId: ins.id })}
           >
             <CalendarPlus size={15} />
@@ -143,7 +151,12 @@ export default function InstrumentDetail() {
                     r.status !== "cancelled" &&
                     r.status !== "rejected",
                 );
+                const dayMaintenance = insMaintenanceAll.filter(
+                  (m) => dayKey(m.start) === dKey || dayKey(m.end) === dKey,
+                );
                 const isToday = dayKey(new Date()) === dKey;
+                const past = startOfDay(day).getTime() < startOfDay(new Date()).getTime() && !isToday;
+                const clickable = !past && ins.status !== "maintenance" && ins.status !== "offline";
                 return (
                   <div key={dKey} className="min-w-[92px] flex-1">
                     <div className={cn("mb-1 pb-1 text-center", isToday && "rounded-md bg-phosphor/10")}>
@@ -155,21 +168,26 @@ export default function InstrumentDetail() {
                     <div
                       className="relative"
                       style={{ height: totalSlots * HOUR_HEIGHT }}
-                      onClick={(e) => {
-                        if (e.target !== e.currentTarget) return;
-                        const hour = openHour;
-                        setTarget({ instrumentId: ins.id, date: day, startHour: hour, durationHours: 1 });
-                      }}
                     >
                       {hours.map((h, idx) => {
                         const slotISO = `${dKey}T${String(h).padStart(2, "0")}:00`;
+                        const slotEnd = toISO(addHours(parseISO(slotISO), 1));
+                        const slotInPast = isBefore(slotEnd, nowISO());
+                        const slotBlockedByMaint = dayMaintenance.some(
+                          (m) => parseISO(m.start) < parseISO(slotEnd) && parseISO(m.end) > parseISO(slotISO),
+                        );
+                        const disabled = !clickable || slotInPast || slotBlockedByMaint;
                         return (
                           <button
                             key={h}
+                            disabled={disabled}
                             onClick={() => setTarget({ instrumentId: ins.id, date: day, startHour: h, durationHours: 1 })}
                             className={cn(
-                              "absolute left-0 right-0 border-t border-ink-600/40 transition-colors hover:bg-phosphor/5",
-                              isBefore(slotISO, nowISO()) && "opacity-40",
+                              "absolute left-0 right-0 border-t border-ink-600/40 transition-colors",
+                              !disabled && "hover:bg-phosphor/10",
+                              disabled && "cursor-not-allowed",
+                              slotInPast && "opacity-30",
+                              slotBlockedByMaint && "bg-amberph/5",
                             )}
                             style={{ top: idx * HOUR_HEIGHT, height: HOUR_HEIGHT }}
                             aria-label={`预约 ${formatDateShort(day)} ${h}:00`}
@@ -191,7 +209,7 @@ export default function InstrumentDetail() {
                           <div
                             key={r.id}
                             className={cn(
-                              "absolute left-0.5 right-0.5 overflow-hidden rounded-md px-1.5 py-1 text-[9px] ring-1 ring-inset",
+                              "absolute left-0.5 right-0.5 z-20 overflow-hidden rounded-md px-1.5 py-1 text-[9px] ring-1 ring-inset",
                               rMeta.bg,
                               rMeta.text,
                               rMeta.ring,
@@ -206,23 +224,31 @@ export default function InstrumentDetail() {
                         );
                       })}
 
-                      {insMaintenance.map((m) => {
+                      {dayMaintenance.map((m, idx) => {
                         const start = parseISO(m.start);
                         const end = parseISO(m.end);
-                        if (dayKey(m.start) !== dKey && dayKey(m.end) !== dKey && !overlaps(m.start, m.end, dKey + "T00:00", dKey + "T23:59")) return null;
-                        const startH = Math.max(start.getHours() + start.getMinutes() / 60, openHour);
-                        const endH = Math.min(end.getHours() + end.getMinutes() / 60, closeHour);
+                        const clampStart = new Date(start);
+                        clampStart.setHours(openHour, 0, 0, 0);
+                        const realStart = start > clampStart ? start : clampStart;
+                        const clampEnd = new Date(end);
+                        clampEnd.setHours(closeHour, 0, 0, 0);
+                        const realEnd = end < clampEnd ? end : clampEnd;
+                        const startH = realStart.getHours() + realStart.getMinutes() / 60;
+                        const endH = realEnd.getHours() + realEnd.getMinutes() / 60;
                         if (endH <= startH) return null;
                         const top = (startH - openHour) * HOUR_HEIGHT;
                         const height = (endH - startH) * HOUR_HEIGHT;
                         return (
                           <div
-                            key={m.id}
-                            className="pointer-events-none absolute left-0 right-0 z-10 flex items-center gap-1 overflow-hidden rounded-md border border-dashed border-amberph/50 bg-amberph/10 px-1.5"
-                            style={{ top, height: Math.max(height - 2, 12) }}
+                            key={`${m.plan.id}-${idx}`}
+                            className="pointer-events-none absolute left-0 right-0 z-10 flex items-start gap-1 overflow-hidden rounded-md border border-dashed border-amberph/60 bg-amberph/10 px-1.5 py-0.5"
+                            style={{ top, height: Math.max(height - 2, 14) }}
+                            title={`维护：${m.plan.title} · ${formatTime(m.start)}–${formatTime(m.end)}`}
                           >
-                            <Wrench size={9} className="shrink-0 text-amberph" />
-                            <span className="truncate text-[9px] text-amberph">维护</span>
+                            <Wrench size={9} className="mt-0.5 shrink-0 text-amberph" />
+                            <span className="truncate text-[9px] leading-tight text-amberph">
+                              {formatTime(m.start)} {m.plan.title}
+                            </span>
                           </div>
                         );
                       })}

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { useStore, isUserQualified } from "@/store/useStore";
 import { Modal } from "@/components/ui/Modal";
 import { Chip } from "@/components/ui/Badge";
@@ -40,6 +40,20 @@ export function ReservationModal({
 
   const instrument: Instrument = instruments.find((i) => i.id === instrumentId) ?? initialInstrument;
 
+  // clamp startHour and duration to the instrument's open window
+  useEffect(() => {
+    setStartHour((h) => {
+      if (h < instrument.dailyOpenHour) return instrument.dailyOpenHour;
+      if (h >= instrument.dailyCloseHour) return instrument.dailyOpenHour;
+      return h;
+    });
+  }, [instrument.id, instrument.dailyOpenHour, instrument.dailyCloseHour]);
+
+  const maxDuration = instrument.dailyCloseHour - startHour;
+  useEffect(() => {
+    if (duration > maxDuration && maxDuration > 0) setDuration(maxDuration);
+  }, [maxDuration, duration]);
+
   const qualified = useMemo(
     () => isUserQualified(qualificationRecords, currentUser.id, instrument.qualificationIds),
     [qualificationRecords, currentUser.id, instrument.qualificationIds],
@@ -48,11 +62,11 @@ export function ReservationModal({
   const requiredQuals = qualifications.filter((q) => instrument.qualificationIds.includes(q.id));
 
   const startISO = `${dateStr}T${String(startHour).padStart(2, "0")}:00`;
-  const endISO = toISO(addHours(parseISO(startISO), duration));
+  const endISO = toISO(addHours(parseISO(startISO), Math.min(duration, maxDuration)));
 
   const hourOptions: number[] = [];
   for (let h = instrument.dailyOpenHour; h < instrument.dailyCloseHour; h += 1) hourOptions.push(h);
-  const durationOptions = [0.5, 1, 1.5, 2, 3, 4, 5, 6];
+  const durationOptions = [0.5, 1, 1.5, 2, 3, 4, 5, 6].filter((d) => d <= maxDuration);
 
   const handleSubmit = () => {
     if (!purpose.trim()) return;
@@ -76,7 +90,7 @@ export function ReservationModal({
       footer={
         <>
           <button className="btn-ghost" onClick={onClose}>取消</button>
-          <button className="btn-primary" disabled={!purpose.trim()} onClick={handleSubmit}>
+          <button className="btn-primary" disabled={!purpose.trim() || maxDuration <= 0 || durationOptions.length === 0} onClick={handleSubmit}>
             <FlaskConical size={15} />
             提交预约
           </button>
@@ -92,7 +106,7 @@ export function ReservationModal({
               onChange={(e) => setInstrumentId(e.target.value)}
               disabled={!!target.instrumentId}
             >
-              {instruments.map((i) => (
+              {instruments.filter((i) => i.status !== "offline").map((i) => (
                 <option key={i.id} value={i.id}>
                   {i.name} · {i.code}
                 </option>
